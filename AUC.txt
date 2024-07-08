@@ -1,0 +1,296 @@
+# case5:  n = 1000, d = 5, (0.2,3)   SVM Classifier
+
+setwd("Your save path")
+dir <- "Your save path"
+
+
+library(MASS)
+library(rpart)
+library(e1071)
+
+
+d<-5                                   # Number of sample features
+n<-1000                             # Number of samples
+M <-1000                           # Number of repeat trials
+f <-2                                 # Cross-validate the fold
+mean1<-rep(0,d)               # Vector of the mean for the first type of sample
+cov1<-diag(d)                   # Covariance matrix for the first type of sample 
+mean2<-0.2*rep(1,d)        # Vector of the mean for the second type of sample
+cov2<-3*cov1                   # Covariance matrix for the second type of sample 
+alph<-c(0.025,0.975)        # Confidence levels
+
+AUCValue <-0.8676878   # Case5 AUC value
+
+
+# Gaussian distribution samples with two classes of labels (0 and 1) are generated.
+GSample<-function(h)    
+{
+  hh<-trunc(h/2)
+  # o<-sample(h,hh)    
+  x<-matrix(NA,h,d)
+  y<-rep(NA,h)
+  x[1:(h/2),]<-mvrnorm(hh,mean1,cov1)
+  x[((h/2+1):h),]<-mvrnorm(h-hh,mean2,cov2)
+  y[1:(h/2)]<-0  
+  y[((h/2+1):h)]<-1
+  return(list(x,y))
+}   
+
+
+# Used to get the index of each category sample in the label vector y.
+PerClassIndexs<-function(y)
+{
+  a<-vector("list")
+  n<-length(y)
+  PerClassNums<-table(y) 
+  ClassNames<-attributes(PerClassNums)$dimnames[1]$y
+  for(i in 1:length(PerClassNums)) 
+  {
+    a[[i]]<-which(y==ClassNames[i])   
+  }
+  return(a)
+}
+
+
+# Group the sample label vector y by category, 
+# and create a sample grouping based on the specified cross-validation fold f.
+PGroups<-function(y,f)
+{ 
+  f<-trunc(f)
+  n<-length(y)
+  groups<-vector("list",f)
+  
+  a<-PerClassIndexs(y)    
+  classindex<-IndexSample(a)  
+  
+  if(n!=length(classindex))
+    stop("length of y must be equal to length of classindex")
+  if(f<2)
+    stop(" f should be greater than or equal to 2")
+  else if (f>n)
+    stop("f should be less than or equal to the number of observations")
+  else if(f==n)
+    groups<-c(1:n)
+  else 
+  {
+    for(i in 1:n)  
+    {
+      jj<-trunc((i-1)%%f)+1 
+      cnt<-trunc((i-1)/f)+1
+      groups[[jj]][cnt]<-classindex[i]
+    }
+  }   
+  return(groups)
+}
+
+
+# The sample indexes for each category are randomized 
+# and the indexes of all categories are combined into a single index vector.
+IndexSample<-function(a)
+{ if(length(a[[1]])==1)
+  index<-as.vector(a[[1]])
+else index<-sample(as.vector(a[[1]]))  
+for(i in 2:length(a))
+{
+  if(length(a[[i]])==1) 
+    index<-c(index,as.vector(a[[i]]))
+  else  index<-c(index,sample(as.vector(a[[i]])))  
+}
+return(index)
+}
+
+
+# The confidence interval for AUC values was calculated based on the Beta distribution.
+AUCconfidence_interval_2 <-function(a1,b1,alph)       
+{
+  FQB <-rep(NA,length(alph))
+  
+  for (jj in 1:length(alph)) {
+    a <- alph[jj]
+    FQB[jj] <-qbeta(a,a1,b1)
+    
+  }
+  return(FQB)
+}
+
+
+# Tell if a given AUC value falls within the specified confidence interval.
+AUCInOrNotInteval <-function(AUCvalue,LeftInterval,RigthInterval)  
+{
+  if(AUCvalue>=LeftInterval&& AUCvalue<=RigthInterval)
+  {
+    AUCvalueInOr<-1
+  }
+  else AUCvalueInOr<-0
+  return(AUCvalueInOr)
+}
+
+
+# Calculate the confidence interval for the AUC value of a given sample data based on the t-test.
+AUCconfidence_interval_t.test <-function(samp)    
+{
+  FQB1 <-rep(NA,length(alph))
+  tvalue<-qt(0.975,f-1) 
+  mean_of_x <-mean(samp)
+  
+  sd_of_x <-sqrt(sum((samp-mean_of_x)^2)/f/(f-1))
+  
+  co.inter <- c(mean_of_x - tvalue*sd_of_x, mean_of_x + tvalue*sd_of_x)
+  FQB1[1] <-co.inter[1]
+  FQB1[2] <-co.inter[2]
+  
+  return(FQB1)
+  
+}
+
+
+# The confidence interval for the AUC value of 
+# the given sample data is calculated based on the t-test and the modified formula.
+AUCconfidence_interval_t.test_corrected <-function(samp,rho)
+{
+  FQB1 <-rep(NA,length(alph))
+  tvalue<-qt(0.975,f-1) 
+  mean_of_x <-mean(samp)
+  
+  sd_of_x <-sqrt(sum((samp-mean_of_x)^2)/f/(f-1)/(1-rho))
+  
+  
+  co.inter <- c(mean_of_x - tvalue*sd_of_x, mean_of_x + tvalue*sd_of_x)
+  
+  FQB1[1] <-co.inter[1]
+  FQB1[2] <-co.inter[2]
+  
+  return(FQB1)
+}
+
+
+
+#########################################
+#########################################
+#########################################
+time1 <- proc.time() # Record the point in time when the code starts executing.
+library(foreach)
+library(doParallel)
+#install.packages('snow')
+#install.packages('Rmpi')
+#library(snow)
+#library(Rmpi)
+#cl <- makeCluster(type="MPI")
+cl <- makeCluster(4)  # Set up a parallel computing environment
+registerDoParallel(cl)
+
+# The AUC confidence interval of each classifier and 
+# the case that the interval contains the real value were estimated through simulation experiments.
+results<-foreach(i=1:M,.combine=rbind) %dopar%{
+  library(MASS)
+  library(rpart)
+  library(e1071)
+  library(ROCR)
+  
+  cut0 <-sample(1:(n/2),n/2)  # Fixed slicing
+  cut1 <-sample(((n/2+1):n),n/2)
+  groups <-list()
+  for(k in 1:f)
+  {
+    shuju <-c(cut0[(1+(n/2/f)*(k-1)):((n/2/f)+(n/2/f)*(k-1))],
+              cut1[(1+(n/2/f)*(k-1)):((n/2/f)+(n/2/f)*(k-1))])
+    groups[[k]]<-shuju   # Grouping, F-fold cross-validation
+    
+    
+  }
+  
+  EVarAUC_k <-matrix(NA,100,f)
+  
+  for(k in 1:100)  
+  {
+    
+    
+    data_all<-GSample(n)
+    x<-data_all[[1]]    
+    y<-factor(data_all[[2]])      
+    x<-data.frame(x)
+    f<-trunc(f)
+    datat<-cbind(x,y)
+    y<-factor(y)
+    y<-as.numeric(as.vector(y))
+    
+    
+    for(i in 1:f)  
+    {
+      dTrain=datat[-groups[[i]],]
+      dTest=datat[groups[[i]],]
+      YTest=y[groups[[i]]]
+      
+      # Use a decision tree as a classifier
+      #fittr <- rpart(y ~ ., data = dTrain, method = "class")
+      #preTest <- predict(fittr, dTest, type = "prob")[, 2]  
+      #pred <- prediction(preTest, YTest)
+      #EVarAUC_k[k, i] <- performance(pred, 'auc')@y.values[[1]]
+      
+      # Use a naive Bayes classifier
+      #fittr <- naiveBayes(y ~ ., data = dTrain) 
+      #preTest <- predict(fittr, dTest, type = "raw")  
+      #pred <- prediction(preTest[,2], YTest) 
+      #EVarAUC_k[k, i] <- performance(pred, 'auc')@y.values[[1]]
+      
+      # Use SVM as a classifier
+      fittr<-svm(y~.,data=dTrain,probability = TRUE,type="C-classification") 
+      preTest<-predict(fittr,dTest,probability = TRUE)
+      aaa <-attr(preTest,"probabilities")
+      preTest <-aaa[,which(colnames(aaa)=='1')]
+      pred <- prediction(preTest,YTest) 
+      EVarAUC_k[k,i] <-performance(pred,'auc')@y.values[[1]]
+    }
+    
+  }
+  varAUC_k <-unlist(lapply(1:f,function(h) var(EVarAUC_k[1:100,h]))) 
+  EAUC_k <-colMeans(EVarAUC_k[1:100,]) 
+  E <-mean(EAUC_k)   #Sample mean
+  V <-sum(varAUC_k)/f/f   #Sample variance
+  #Beta distribution parameters
+  a <-E*(E-E^2-V)/V
+  b <-(1-E)*(E-E^2-V)/V 
+  
+  #confidence interval
+  auc_interval <-vector(mode="numeric",length=9)
+  auc_interval[1:2] <-AUCconfidence_interval_2(a,b,alph)   #beta
+  auc_interval[4:5] <-AUCconfidence_interval_t.test_corrected(samp = EVarAUC_k[100,],rho = 0.7)   #correct t
+  auc_interval[7:8] <-AUCconfidence_interval_t.test(samp = EVarAUC_k[100,])   #t
+  for(e in c(3,6,9))
+  {
+    auc_interval[e] <-auc_interval[e-1]-auc_interval[e-2]
+  }
+  #DOC
+  CountAUCInRateBP<-numeric()
+  for(r in 1:3)
+  {
+    CountAUCInRateBP[r] <-AUCInOrNotInteval(AUCValue,auc_interval[(1+3*(r-1))],
+                                            auc_interval[(2+3*(r-1))]) 
+  }
+  return(c(auc_interval,CountAUCInRateBP,EAUC_k))
+}
+
+stopCluster(cl)
+time <-  proc.time() - time1
+###########results
+DOC_IL_result <-colMeans(as.matrix(results))
+
+IL <-as.matrix(DOC_IL_result[c(3,6,9)])
+rownames(IL) <-c("AUCbeta","corrected_t","t.test")
+
+DOC <-as.matrix(DOC_IL_result[10:12])
+rownames(DOC) <-c("AUCbeta","corrected_t","t.test")
+result <-cbind(IL,DOC)
+
+filename1=paste(dir,"/SVM_DOC_IL_EVarAUC_f_",f,"_n_",n,"_d_",
+                d,"_mean2_",mean2[1],"_sigma2_",cov2[1],".csv", sep="")
+
+write.csv(result,filename1)
+
+filename2=paste(dir,"/SVM_DOC_IL_EVarAUC_results_f_",f,"_n_",n,"_d_",
+                d,"_mean2_",mean2[1],"_sigma2_",cov2[1],".csv", sep="")
+
+write.csv(results,filename2)
+
+
+
